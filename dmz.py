@@ -26,6 +26,24 @@ firebase_admin.initialize_app(cred)
 # Firestore 클라이언트
 db = firestore.client()
 
+# 간단 HTTP 서버 (Render WebService 포트 바인딩용)
+from aiohttp import web
+
+async def handle(request):
+    return web.Response(text="OK")
+
+async def start_webserver():
+    app = web.Application()
+    app.add_routes([web.get("/", handle)])
+    runner = web.AppRunner(app)
+    await runner.setup()
+    # Render가 지정한 포트
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+db = firestore.client()
+
 # 환경변수 키 읽기
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
@@ -137,6 +155,10 @@ class PaginatorView(View):
 # 봇 준비
 @bot.event
 async def on_ready():
+    global status_msg, paginator_view, SELECTED
+    # Keep-alive 웹서버 시작 (UptimeRobot용)
+    bot.loop.create_task(start_webserver())
+    load_data()
     global status_msg, paginator_view, SELECTED
     load_data()
     guild = bot.get_guild(GUILD_ID)
