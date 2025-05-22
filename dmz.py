@@ -158,8 +158,25 @@ class PaginatorView(View):
 # 봇 준비 이벤트
 @bot.event
 async def on_ready():
-    global status_msg, paginator_view, SELECTED
+    global status_msg, paginator_view, SELECTED, join_times
+    # 데이터 로드
     load_data()
+    guild = bot.get_guild(GUILD_ID)
+    # 감시할 사용자 리스트
+    SELECTED = [m.display_name for m in guild.members if not m.bot]
+    # 현재 음성방에 있는 사용자 초기화하여 재시작 후에도 누적 기록 유지
+    now = datetime.now(timezone.utc)
+    for vc in guild.voice_channels:
+        for member in vc.members:
+            if not member.bot and member.display_name in SELECTED:
+                # 이미 접속 중이던 시간 기록 시작
+                join_times[member.display_name] = now
+    # 상태 메시지 초기화
+    channel = bot.get_channel(STATUS_CHANNEL)
+    paginator_view = PaginatorView()
+    status_msg = await channel.send(embed=make_embed(0), view=paginator_view)
+    update_status.start()
+    print(f"Logged in as {bot.user} on {guild.name}, members={len(SELECTED)}")
     guild = bot.get_guild(GUILD_ID)
     SELECTED = [m.display_name for m in guild.members if not m.bot]
     channel = bot.get_channel(STATUS_CHANNEL)
