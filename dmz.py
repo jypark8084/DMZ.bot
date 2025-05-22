@@ -6,6 +6,7 @@ from discord.ext.commands import Bot
 from discord.ui import View, button
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
+from aiohttp import web
 
 # Firebase Admin SDK 초기화
 import firebase_admin
@@ -16,10 +17,10 @@ load_dotenv()
 
 # Firebase 서비스 계정 키 처리: 경로 또는 JSON 문자열
 sa = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
-if os.path.isfile(sa):
+if sa and os.path.isfile(sa):
     cred = credentials.Certificate(sa)
 else:
-    cred_dict = json.loads(sa)
+    cred_dict = json.loads(sa or "{}")
     cred = credentials.Certificate(cred_dict)
 firebase_admin.initialize_app(cred)
 
@@ -27,8 +28,6 @@ firebase_admin.initialize_app(cred)
 db = firestore.client()
 
 # 간단 HTTP 서버 (Render WebService 포트 바인딩용)
-from aiohttp import web
-
 async def handle(request):
     return web.Response(text="OK")
 
@@ -37,12 +36,9 @@ async def start_webserver():
     app.add_routes([web.get("/", handle)])
     runner = web.AppRunner(app)
     await runner.setup()
-    # Render가 지정한 포트
     port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-
-db = firestore.client()
 
 # 환경변수 키 읽기
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -57,33 +53,33 @@ intents.voice_states = True
 intents.members = True
 bot = Bot(command_prefix="/", intents=intents)
 
+# 웹서버 즉시 시작
+bot.loop.create_task(start_webserver())
+
 # 동적 사용자 리스트와 기록
 SELECTED = []
-last_chat = {}     # {name: datetime}
-last_leave = {}    # {name: datetime}
-join_times = {}    # {name: datetime}
-total_voice = {}   # {name: timedelta}
+last_chat = {}       # {name: datetime}
+last_leave = {}      # {name: datetime}
+join_times = {}      # {name: datetime}
+total_voice = {}     # {name: timedelta}
 status_msg = None
 paginator_view = None
 
 # Firestore 헬퍼 함수
 def save_chat_time(name: str, t: datetime):
     db.collection('last_chat').document(name).set({'time': t.isoformat()})
-
 def get_all_chat_times():
     return {doc.id: datetime.fromisoformat(doc.to_dict()['time'])
             for doc in db.collection('last_chat').stream()}
 
 def save_leave_time(name: str, t: datetime):
     db.collection('last_leave').document(name).set({'time': t.isoformat()})
-
 def get_all_leave_times():
     return {doc.id: datetime.fromisoformat(doc.to_dict()['time'])
             for doc in db.collection('last_leave').stream()}
 
 def save_total_voice(name: str, secs: float):
     db.collection('total_voice').document(name).set({'seconds': secs})
-
 def get_all_total_voice():
     return {doc.id: doc.to_dict().get('seconds', 0)
             for doc in db.collection('total_voice').stream()}
@@ -96,7 +92,7 @@ def load_data():
     raw = get_all_total_voice()
     total_voice = {k: timedelta(seconds=v) for k, v in raw.items()}
 
-# 시간 가공 헬퍼
+# 시간 가공 헬퍼 함수
 def humanize_delta(delta: timedelta) -> str:
     secs = int(delta.total_seconds())
     if secs < 60:
@@ -152,13 +148,9 @@ class PaginatorView(View):
         else:
             await interaction.response.defer()
 
-# 봇 준비
+# 봇 준비 이벤트
 @bot.event
 async def on_ready():
-    global status_msg, paginator_view, SELECTED
-    # Keep-alive 웹서버 시작 (UptimeRobot용)
-    bot.loop.create_task(start_webserver())
-    load_data()
     global status_msg, paginator_view, SELECTED
     load_data()
     guild = bot.get_guild(GUILD_ID)
@@ -180,7 +172,7 @@ async def on_message(msg):
     last_chat[name] = now
     save_chat_time(name, now)
 
-# 음성 상태
+# 음성 상태 업데이트
 @bot.event
 async def on_voice_state_update(member, before, after):
     if member.guild.id != GUILD_ID:
@@ -199,7 +191,7 @@ async def on_voice_state_update(member, before, after):
             last_leave[name] = now
             save_leave_time(name, now)
 
-# Embed 생성
+# Embed 생성 함수
 def make_embed(page: int) -> discord.Embed:
     now = datetime.now(timezone.utc)
     sorted_users = sorted(
@@ -226,11 +218,7 @@ def make_embed(page: int) -> discord.Embed:
         dur_str = humanize_duration(cum)
         leave_str = humanize_delta(now - last_leave.get(name, now)) + "전" if name in last_leave else "–"
         together = "✅" if (name in join_times and now - join_times[name] > timedelta(minutes=10)) else "❌"
-        e.add_field(
-            name=name,
-            value=f"🗣 채팅: {chat_str} | 🔊 통화: {dur_str}/{leave_str} | ⏱ 10분 같이 통화: {together}",
-            inline=False
-        )
+        e.add_field(name=name, value=f"🗣 채팅: {chat_str} | 🔊 통화: {dur_str}/{leave_str} | ⏱ 10분 같이 통화: {together}", inline=False)
     return e
 
 # 주기적 업데이트
@@ -238,4 +226,5 @@ def make_embed(page: int) -> discord.Embed:
 async def update_status():
     await status_msg.edit(embed=make_embed(paginator_view.current_page), view=paginator_view)
 
+# 봇 실행
 bot.run(TOKEN)
